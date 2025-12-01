@@ -12,13 +12,20 @@ import (
 	"github.com/google/uuid"
 )
 
-type OrderUseCase struct {
-	orderRepo repositories.OrderRepository
+type NatsPublisher interface {
+	PublishOrderCreated(ctx context.Context, order *entities.Order) error
+	Close()
 }
 
-func NewOrderUseCase(orderRepo repositories.OrderRepository) *OrderUseCase {
+type OrderUseCase struct {
+	orderRepo     repositories.OrderRepository
+	natsPublisher NatsPublisher
+}
+
+func NewOrderUseCase(orderRepo repositories.OrderRepository, natsPublisher NatsPublisher) *OrderUseCase {
 	return &OrderUseCase{
-		orderRepo: orderRepo,
+		orderRepo:     orderRepo,
+		natsPublisher: natsPublisher,
 	}
 }
 
@@ -52,6 +59,17 @@ func (uc *OrderUseCase) CreateOrder(ctx context.Context, userID string, items []
 
 	if err := uc.orderRepo.Create(order); err != nil {
 		return nil, fmt.Errorf("failed to create order: %w", err)
+	}
+
+	if uc.natsPublisher != nil {
+		go func() {
+			pubCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			if err := uc.natsPublisher.PublishOrderCreated(pubCtx, order); err != nil {
+				fmt.Printf("Warning: Failed to publish order.created event: %v\n", err)
+			}
+		}()
 	}
 
 	return order, nil

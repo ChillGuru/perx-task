@@ -2,14 +2,18 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"os"
+	"time"
 
 	"order-service/internal/delivery/grpc/handler"
 	"order-service/internal/delivery/grpc/proto"
+	"order-service/internal/domain/entities"
 	"order-service/internal/infrastructure/logger"
 	"order-service/internal/infrastructure/mongodb"
+	"order-service/internal/infrastructure/nats"
 	"order-service/internal/usecase"
 
 	"google.golang.org/grpc"
@@ -25,15 +29,10 @@ func Run() error {
 	logger.Info("MONGO_DB=" + os.Getenv("MONGO_DB"))
 	logger.Info("NATS_URL=" + os.Getenv("NATS_URL"))
 
-	mongoURI := os.Getenv("MONGO_URI")
-	if mongoURI == "" {
-		mongoURI = "mongodb://localhost:27017"
-	}
-
-	mongoDB := os.Getenv("MONGO_DB")
-	if mongoDB == "" {
-		mongoDB = "orderdb"
-	}
+	mongoURI := getEnv("MONGO_URI", "mongodb://localhost:27017")
+	mongoDB := getEnv("MONGO_DB", "orderdb")
+	natsURL := getEnv("NATS_URL", "nats://localhost:4222")
+	grpcPort := getEnv("GRPC_PORT", "50051")
 
 	orderRepo, err := mongodb.NewOrderRepositoryMongo(mongoURI, mongoDB, logger)
 	if err != nil {
@@ -43,7 +42,25 @@ func Run() error {
 	defer orderRepo.Close()
 	logger.Info("Connected to MongoDB", "uri", mongoURI, "db", mongoDB)
 
-	orderUseCase := usecase.NewOrderUseCase(orderRepo)
+	var natsPublisher usecase.NatsPublisher
+	if natsURL != "" {
+		publisher, err := connectToNATSWithRetry(natsURL, logger, 3, 2*time.Second)
+		if err != nil {
+			logger.Warn("Failed to connect to NATS, continuing without event publishing",
+				"error", err,
+				"url", natsURL)
+			natsPublisher = &noopNatsPublisher{}
+		} else {
+			defer publisher.Close()
+			natsPublisher = publisher
+			logger.Info("Connected to NATS and event publishing is enabled")
+		}
+	} else {
+		logger.Info("NATS_URL not set, event publishing disabled")
+		natsPublisher = &noopNatsPublisher{}
+	}
+
+	orderUseCase := usecase.NewOrderUseCase(orderRepo, natsPublisher)
 
 	orderHandler := handler.NewOrderHandler(orderUseCase)
 
@@ -54,7 +71,7 @@ func Run() error {
 	proto.RegisterOrderServiceServer(grpcServer, orderHandler)
 	reflection.Register(grpcServer)
 
-	lis, err := net.Listen("tcp", ":50051")
+	lis, err := net.Listen("tcp", ":"+grpcPort)
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
@@ -64,6 +81,42 @@ func Run() error {
 		log.Fatalf("failed to serve: %v", err)
 	}
 	return nil
+}
+
+func connectToNATSWithRetry(url string, logger *logger.Logger, maxRetries int, delay time.Duration) (usecase.NatsPublisher, error) {
+	for i := 0; i < maxRetries; i++ {
+		publisher, err := nats.NewNatsPublisher(url)
+		if err == nil {
+			return publisher, nil
+		}
+
+		logger.Warn("Failed to connect to NATS, retrying...",
+			"attempt", i+1,
+			"max_retries", maxRetries,
+			"error", err)
+
+		if i < maxRetries-1 {
+			time.Sleep(delay)
+		}
+	}
+
+	return nil, fmt.Errorf("failed to connect to NATS after %d attempts", maxRetries)
+}
+
+type noopNatsPublisher struct{}
+
+func (n *noopNatsPublisher) PublishOrderCreated(ctx context.Context, order *entities.Order) error {
+	return nil
+}
+
+func (n *noopNatsPublisher) Close() {
+}
+
+func getEnv(key, defaultValue string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return defaultValue
 }
 
 func loggingInterceptor(logger *logger.Logger) grpc.UnaryServerInterceptor {

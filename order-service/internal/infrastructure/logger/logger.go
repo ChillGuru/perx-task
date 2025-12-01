@@ -7,12 +7,14 @@ import (
 
 type Logger struct {
 	infoLog  *log.Logger
+	warnLog  *log.Logger
 	errorLog *log.Logger
 }
 
 func NewLogger() *Logger {
 	return &Logger{
 		infoLog:  log.New(os.Stdout, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile),
+		warnLog:  log.New(os.Stdout, "WARN: ", log.Ldate|log.Ltime|log.Lshortfile),
 		errorLog: log.New(os.Stderr, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile),
 	}
 }
@@ -22,6 +24,14 @@ func (l *Logger) Info(msg string, args ...interface{}) {
 		l.infoLog.Printf(msg+": %v", args...)
 	} else {
 		l.infoLog.Println(msg)
+	}
+}
+
+func (l *Logger) Warn(msg string, args ...interface{}) {
+	if len(args) > 0 {
+		l.warnLog.Printf(msg+": %v", args...)
+	} else {
+		l.warnLog.Println(msg)
 	}
 }
 

@@ -2,7 +2,9 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"order-service/internal/domain/entities"
 	"order-service/internal/domain/repositories"
@@ -22,6 +24,9 @@ func (m *MockOrderRepository) Create(order *entities.Order) error {
 
 func (m *MockOrderRepository) GetByID(orderID string) (*entities.Order, error) {
 	args := m.Called(orderID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
 	return args.Get(0).(*entities.Order), args.Error(1)
 }
 
@@ -30,9 +35,24 @@ func (m *MockOrderRepository) UpdateStatus(orderID, status string) error {
 	return args.Error(0)
 }
 
+type MockNatsPublisher struct {
+	mock.Mock
+}
+
+func (m *MockNatsPublisher) PublishOrderCreated(ctx context.Context, order *entities.Order) error {
+	args := m.Called(ctx, order)
+	return args.Error(0)
+}
+
+func (m *MockNatsPublisher) Close() {
+	m.Called()
+}
+
 func TestOrderUseCase_CreateOrder(t *testing.T) {
 	mockRepo := new(MockOrderRepository)
-	useCase := NewOrderUseCase(mockRepo)
+	mockNats := new(MockNatsPublisher)
+
+	useCase := NewOrderUseCase(mockRepo, mockNats)
 	ctx := context.Background()
 
 	items := []entities.Item{
@@ -46,7 +66,12 @@ func TestOrderUseCase_CreateOrder(t *testing.T) {
 			order := args.Get(0).(*entities.Order)
 			assert.Equal(t, "PENDING", order.Status)
 			assert.Equal(t, 25.0, order.TotalAmount)
+			assert.Equal(t, "user123", order.UserID)
+			assert.Len(t, order.Items, 2)
 		})
+
+	mockNats.On("PublishOrderCreated", mock.Anything, mock.AnythingOfType("*entities.Order")).
+		Return(nil)
 
 	order, err := useCase.CreateOrder(ctx, "user123", items)
 
@@ -57,12 +82,68 @@ func TestOrderUseCase_CreateOrder(t *testing.T) {
 	assert.Equal(t, 25.0, order.TotalAmount)
 	assert.Len(t, order.Items, 2)
 
+	time.Sleep(50 * time.Millisecond)
+
+	mockRepo.AssertExpectations(t)
+	mockNats.AssertExpectations(t)
+}
+
+func TestOrderUseCase_CreateOrder_NATSErrorNotFatal(t *testing.T) {
+	mockRepo := new(MockOrderRepository)
+	mockNats := new(MockNatsPublisher)
+
+	useCase := NewOrderUseCase(mockRepo, mockNats)
+	ctx := context.Background()
+
+	items := []entities.Item{
+		{ProductID: "prod1", Quantity: 1, Price: 10.0},
+	}
+
+	mockRepo.On("Create", mock.AnythingOfType("*entities.Order")).
+		Return(nil)
+
+	mockNats.On("PublishOrderCreated", mock.Anything, mock.AnythingOfType("*entities.Order")).
+		Return(errors.New("nats connection failed"))
+
+	order, err := useCase.CreateOrder(ctx, "user123", items)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, order)
+	assert.Equal(t, "user123", order.UserID)
+	assert.Equal(t, "PENDING", order.Status)
+
+	time.Sleep(50 * time.Millisecond)
+
+	mockRepo.AssertExpectations(t)
+	mockNats.AssertExpectations(t)
+}
+
+func TestOrderUseCase_CreateOrder_WithoutNATSPublisher(t *testing.T) {
+	mockRepo := new(MockOrderRepository)
+
+	useCase := NewOrderUseCase(mockRepo, nil)
+	ctx := context.Background()
+
+	items := []entities.Item{
+		{ProductID: "prod1", Quantity: 1, Price: 10.0},
+	}
+
+	mockRepo.On("Create", mock.AnythingOfType("*entities.Order")).
+		Return(nil)
+
+	order, err := useCase.CreateOrder(ctx, "user123", items)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, order)
+
 	mockRepo.AssertExpectations(t)
 }
 
 func TestOrderUseCase_CreateOrder_InvalidInput(t *testing.T) {
 	mockRepo := new(MockOrderRepository)
-	useCase := NewOrderUseCase(mockRepo)
+	mockNats := new(MockNatsPublisher)
+
+	useCase := NewOrderUseCase(mockRepo, mockNats)
 	ctx := context.Background()
 
 	tests := []struct {
@@ -103,13 +184,19 @@ func TestOrderUseCase_CreateOrder_InvalidInput(t *testing.T) {
 			assert.Error(t, err)
 			assert.Nil(t, order)
 			assert.Contains(t, err.Error(), tt.wantErr)
+
+			mockRepo.AssertNotCalled(t, "Create", mock.Anything)
+
+			mockNats.AssertNotCalled(t, "PublishOrderCreated", mock.Anything, mock.Anything)
 		})
 	}
 }
 
 func TestOrderUseCase_GetOrder(t *testing.T) {
 	mockRepo := new(MockOrderRepository)
-	useCase := NewOrderUseCase(mockRepo)
+	mockNats := new(MockNatsPublisher)
+
+	useCase := NewOrderUseCase(mockRepo, mockNats)
 	ctx := context.Background()
 
 	expectedOrder := &entities.Order{
@@ -124,12 +211,35 @@ func TestOrderUseCase_GetOrder(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Equal(t, expectedOrder, order)
+
 	mockRepo.AssertExpectations(t)
+	mockNats.AssertNotCalled(t, "PublishOrderCreated", mock.Anything, mock.Anything)
+}
+
+func TestOrderUseCase_GetOrder_NotFound(t *testing.T) {
+	mockRepo := new(MockOrderRepository)
+	mockNats := new(MockNatsPublisher)
+
+	useCase := NewOrderUseCase(mockRepo, mockNats)
+	ctx := context.Background()
+
+	mockRepo.On("GetByID", "non-existent").Return((*entities.Order)(nil), repositories.ErrOrderNotFound)
+
+	order, err := useCase.GetOrder(ctx, "non-existent")
+
+	assert.Error(t, err)
+	assert.Nil(t, order)
+	assert.Contains(t, err.Error(), "order not found")
+
+	mockRepo.AssertExpectations(t)
+	mockNats.AssertNotCalled(t, "PublishOrderCreated", mock.Anything, mock.Anything)
 }
 
 func TestOrderUseCase_UpdateOrderStatus(t *testing.T) {
 	mockRepo := new(MockOrderRepository)
-	useCase := NewOrderUseCase(mockRepo)
+	mockNats := new(MockNatsPublisher)
+
+	useCase := NewOrderUseCase(mockRepo, mockNats)
 	ctx := context.Background()
 
 	existingOrder := &entities.Order{
@@ -145,19 +255,66 @@ func TestOrderUseCase_UpdateOrderStatus(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Equal(t, "PAID", order.Status)
+
 	mockRepo.AssertExpectations(t)
+	mockNats.AssertNotCalled(t, "PublishOrderCreated", mock.Anything, mock.Anything)
 }
 
-func TestOrderUseCase_UpdateOrderStatus_Invalid(t *testing.T) {
+func TestOrderUseCase_UpdateOrderStatus_InvalidStatus(t *testing.T) {
 	mockRepo := new(MockOrderRepository)
-	useCase := NewOrderUseCase(mockRepo)
+	mockNats := new(MockNatsPublisher)
+
+	useCase := NewOrderUseCase(mockRepo, mockNats)
 	ctx := context.Background()
 
 	_, err := useCase.UpdateOrderStatus(ctx, "test-order", "INVALID_STATUS")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid order status")
 
+	mockRepo.AssertNotCalled(t, "GetByID", mock.Anything)
+	mockRepo.AssertNotCalled(t, "UpdateStatus", mock.Anything, mock.Anything)
+	mockNats.AssertNotCalled(t, "PublishOrderCreated", mock.Anything, mock.Anything)
+}
+
+func TestOrderUseCase_UpdateOrderStatus_NotFound(t *testing.T) {
+	mockRepo := new(MockOrderRepository)
+	mockNats := new(MockNatsPublisher)
+
+	useCase := NewOrderUseCase(mockRepo, mockNats)
+	ctx := context.Background()
+
 	mockRepo.On("GetByID", "non-existent").Return((*entities.Order)(nil), repositories.ErrOrderNotFound)
-	_, err = useCase.UpdateOrderStatus(ctx, "non-existent", "PAID")
+
+	_, err := useCase.UpdateOrderStatus(ctx, "non-existent", "PAID")
 	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "order not found")
+
+	mockRepo.AssertExpectations(t)
+	mockRepo.AssertNotCalled(t, "UpdateStatus", mock.Anything, mock.Anything)
+	mockNats.AssertNotCalled(t, "PublishOrderCreated", mock.Anything, mock.Anything)
+}
+
+func TestOrderUseCase_UpdateOrderStatus_AlreadyInStatus(t *testing.T) {
+	mockRepo := new(MockOrderRepository)
+	mockNats := new(MockNatsPublisher)
+
+	useCase := NewOrderUseCase(mockRepo, mockNats)
+	ctx := context.Background()
+
+	existingOrder := &entities.Order{
+		OrderID: "test-order",
+		UserID:  "user123",
+		Status:  "PAID",
+	}
+
+	mockRepo.On("GetByID", "test-order").Return(existingOrder, nil)
+	mockRepo.On("UpdateStatus", "test-order", "PAID").Return(nil)
+
+	order, err := useCase.UpdateOrderStatus(ctx, "test-order", "PAID")
+
+	assert.NoError(t, err)
+	assert.Equal(t, "PAID", order.Status)
+
+	mockRepo.AssertExpectations(t)
+	mockNats.AssertNotCalled(t, "PublishOrderCreated", mock.Anything, mock.Anything)
 }

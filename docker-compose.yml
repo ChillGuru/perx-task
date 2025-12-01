@@ -11,9 +11,12 @@ services:
       - GRPC_PORT=50051
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=orderdb
+      - NATS_URL=nats://nats:4222
     depends_on:
       mongodb:
         condition: service_healthy
+      nats:
+        condition: service_started
     restart: unless-stopped
     networks:
       - order-network
@@ -34,6 +37,34 @@ services:
     restart: unless-stopped
     networks:
       - order-network
+
+  nats:
+    image: nats:latest
+    container_name: nats
+    ports:
+      - "4222:4222"
+      - "8222:8222" 
+    command: ["-js", "-m", "8222"]
+    healthcheck:
+      test: ["CMD", "sh", "-c", "timeout 5 nats pub test.health ping || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - order-network
+
+  nats-cli:
+    image: natsio/nats-box:latest
+    container_name: nats-cli
+    entrypoint: ["/bin/sh"]
+    command: ["-c", "tail -f /dev/null"]
+    depends_on:
+      - nats
+    networks:
+      - order-network
+    restart: unless-stopped
 
 volumes:
   mongodb_data:
