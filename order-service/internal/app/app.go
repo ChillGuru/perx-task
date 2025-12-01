@@ -4,11 +4,12 @@ import (
 	"context"
 	"log"
 	"net"
+	"os"
 
 	"order-service/internal/delivery/grpc/handler"
 	"order-service/internal/delivery/grpc/proto"
 	"order-service/internal/infrastructure/logger"
-	"order-service/internal/infrastructure/memory"
+	"order-service/internal/infrastructure/mongodb"
 	"order-service/internal/usecase"
 
 	"google.golang.org/grpc"
@@ -18,7 +19,29 @@ import (
 func Run() error {
 	logger := logger.NewLogger()
 
-	orderRepo := memory.NewOrderRepositoryMemory()
+	logger.Info("Environment variables:")
+	logger.Info("GRPC_PORT=" + os.Getenv("GRPC_PORT"))
+	logger.Info("MONGO_URI=" + os.Getenv("MONGO_URI"))
+	logger.Info("MONGO_DB=" + os.Getenv("MONGO_DB"))
+	logger.Info("NATS_URL=" + os.Getenv("NATS_URL"))
+
+	mongoURI := os.Getenv("MONGO_URI")
+	if mongoURI == "" {
+		mongoURI = "mongodb://localhost:27017"
+	}
+
+	mongoDB := os.Getenv("MONGO_DB")
+	if mongoDB == "" {
+		mongoDB = "orderdb"
+	}
+
+	orderRepo, err := mongodb.NewOrderRepositoryMongo(mongoURI, mongoDB, logger)
+	if err != nil {
+		logger.Error("Failed to connect to MongoDB", "error", err)
+		log.Fatal(err)
+	}
+	defer orderRepo.Close()
+	logger.Info("Connected to MongoDB", "uri", mongoURI, "db", mongoDB)
 
 	orderUseCase := usecase.NewOrderUseCase(orderRepo)
 

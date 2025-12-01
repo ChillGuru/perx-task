@@ -29,12 +29,11 @@ go run cmd/server/main.go
 Тестирование:
 ```bash
 # Создаём заказ (в командной строке cmd)
-# Запрос лежит в корне микросервиса (create_order.json)
-grpcurl -plaintext -d @ localhost:50051 order.OrderService/CreateOrder < create_order.json
+grpcurl -plaintext -d "{\"user_id\":\"test_user\",\"items\":[{\"product_id\":\"prod1\",\"quantity\":2,\"price\":10.0}]}" localhost:50051 order.OrderService/CreateOrder
 
-# Получаем заказ
-grpcurl -plaintext -d "{\"order_id\":\"83ce50c0-7325-4e97-8005-744a6de1446c\"}" localhost:50051 order.OrderService/GetOrder
+# Получаем заказ (id подставляем свой)
+grpcurl -plaintext -d "{\"order_id\":\"d547a579-65fb-4183-ba73-34e115099d06\"}" localhost:50051 order.OrderService/GetOrder
 
 # Меняем статус на PAID
-grpcurl -plaintext -d "{\"order_id\":\"83ce50c0-7325-4e97-8005-744a6de1446c\",\"status\":\"PAID\"}" localhost:50051 order.OrderService/UpdateOrderStatus
+grpcurl -plaintext -d "{\"order_id\":\"d547a579-65fb-4183-ba73-34e115099d06\",\"status\":\"PAID\"}" localhost:50051 order.OrderService/UpdateOrderStatus
 ```
