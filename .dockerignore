@@ -1,0 +1,12 @@
+.git
+.gitignore
+README.md
+.vscode
+.idea
+*.log
+tmp/
+coverage.html
+coverage.out
+cmd/client/
+test_*
+*.test

@@ -1,0 +1,15 @@
+{
+  "user_id": "user123",
+  "items": [
+    {
+      "product_id": "prod1",
+      "quantity": 2,
+      "price": 10.0
+    },
+    {
+      "product_id": "prod2",
+      "quantity": 1,
+      "price": 5.0
+    }
+  ]
+}
