@@ -57,26 +57,8 @@ func (r *OrderRepositoryMongo) Close() error {
 	return r.client.Disconnect(ctx)
 }
 
-func (r *OrderRepositoryMongo) Create(order *entities.Order) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	doc := OrderDocument{
-		OrderID:     order.OrderID,
-		UserID:      order.UserID,
-		TotalAmount: order.TotalAmount,
-		Status:      order.Status,
-		CreatedAt:   order.CreatedAt,
-	}
-
-	doc.Items = make([]ItemDocument, len(order.Items))
-	for i, item := range order.Items {
-		doc.Items[i] = ItemDocument{
-			ProductID: item.ProductID,
-			Quantity:  item.Quantity,
-			Price:     item.Price,
-		}
-	}
+func (r *OrderRepositoryMongo) Create(ctx context.Context, order *entities.Order) error {
+	doc := toOrderDocument(order)
 
 	_, err := r.collection.InsertOne(ctx, doc)
 	if err != nil {
@@ -89,10 +71,7 @@ func (r *OrderRepositoryMongo) Create(order *entities.Order) error {
 	return nil
 }
 
-func (r *OrderRepositoryMongo) GetByID(orderID string) (*entities.Order, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
+func (r *OrderRepositoryMongo) GetByID(ctx context.Context, orderID string) (*entities.Order, error) {
 	var doc OrderDocument
 	err := r.collection.FindOne(ctx, bson.M{"order_id": orderID}).Decode(&doc)
 	if err != nil {
@@ -102,29 +81,10 @@ func (r *OrderRepositoryMongo) GetByID(orderID string) (*entities.Order, error) 
 		return nil, fmt.Errorf("failed to find order: %w", err)
 	}
 
-	items := make([]entities.Item, len(doc.Items))
-	for i, item := range doc.Items {
-		items[i] = entities.Item{
-			ProductID: item.ProductID,
-			Quantity:  item.Quantity,
-			Price:     item.Price,
-		}
-	}
-
-	return &entities.Order{
-		OrderID:     doc.OrderID,
-		UserID:      doc.UserID,
-		Items:       items,
-		TotalAmount: doc.TotalAmount,
-		Status:      doc.Status,
-		CreatedAt:   doc.CreatedAt,
-	}, nil
+	return toOrderEntity(&doc), nil
 }
 
-func (r *OrderRepositoryMongo) UpdateStatus(orderID, status string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
+func (r *OrderRepositoryMongo) UpdateStatus(ctx context.Context, orderID, status string) error {
 	result, err := r.collection.UpdateOne(
 		ctx,
 		bson.M{"order_id": orderID},
@@ -153,4 +113,45 @@ func (r *OrderRepositoryMongo) UpdateStatus(orderID, status string) error {
 	}
 
 	return nil
+}
+
+func toOrderDocument(order *entities.Order) *OrderDocument {
+	doc := &OrderDocument{
+		OrderID:     order.OrderID,
+		UserID:      order.UserID,
+		TotalAmount: order.TotalAmount,
+		Status:      order.Status,
+		CreatedAt:   order.CreatedAt,
+		Items:       make([]ItemDocument, len(order.Items)),
+	}
+
+	for i, item := range order.Items {
+		doc.Items[i] = ItemDocument{
+			ProductID: item.ProductID,
+			Quantity:  item.Quantity,
+			Price:     item.Price,
+		}
+	}
+
+	return doc
+}
+
+func toOrderEntity(doc *OrderDocument) *entities.Order {
+	items := make([]entities.Item, len(doc.Items))
+	for i, item := range doc.Items {
+		items[i] = entities.Item{
+			ProductID: item.ProductID,
+			Quantity:  item.Quantity,
+			Price:     item.Price,
+		}
+	}
+
+	return &entities.Order{
+		OrderID:     doc.OrderID,
+		UserID:      doc.UserID,
+		Items:       items,
+		TotalAmount: doc.TotalAmount,
+		Status:      doc.Status,
+		CreatedAt:   doc.CreatedAt,
+	}
 }

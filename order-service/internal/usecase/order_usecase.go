@@ -53,11 +53,11 @@ func (uc *OrderUseCase) CreateOrder(ctx context.Context, userID string, items []
 		UserID:      userID,
 		Items:       items,
 		TotalAmount: totalAmount,
-		Status:      "PENDING",
+		Status:      string(entities.OrderStatusPending),
 		CreatedAt:   time.Now(),
 	}
 
-	if err := uc.orderRepo.Create(order); err != nil {
+	if err := uc.orderRepo.Create(ctx, order); err != nil {
 		return nil, fmt.Errorf("failed to create order: %w", err)
 	}
 
@@ -67,6 +67,7 @@ func (uc *OrderUseCase) CreateOrder(ctx context.Context, userID string, items []
 			defer cancel()
 
 			if err := uc.natsPublisher.PublishOrderCreated(pubCtx, order); err != nil {
+				// Log error but don't fail the request
 				fmt.Printf("Warning: Failed to publish order.created event: %v\n", err)
 			}
 		}()
@@ -80,7 +81,7 @@ func (uc *OrderUseCase) GetOrder(ctx context.Context, orderID string) (*entities
 		return nil, ErrInvalidOrderID
 	}
 
-	order, err := uc.orderRepo.GetByID(orderID)
+	order, err := uc.orderRepo.GetByID(ctx, orderID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get order: %w", err)
 	}
@@ -96,12 +97,12 @@ func (uc *OrderUseCase) UpdateOrderStatus(ctx context.Context, orderID, status s
 		return nil, ErrInvalidStatus
 	}
 
-	order, err := uc.orderRepo.GetByID(orderID)
+	order, err := uc.orderRepo.GetByID(ctx, orderID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get order for update: %w", err)
 	}
 
-	if err := uc.orderRepo.UpdateStatus(orderID, status); err != nil {
+	if err := uc.orderRepo.UpdateStatus(ctx, orderID, status); err != nil {
 		return nil, fmt.Errorf("failed to update order status: %w", err)
 	}
 

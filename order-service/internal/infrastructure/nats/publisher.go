@@ -4,16 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 
 	"order-service/internal/domain/entities"
+	"order-service/internal/infrastructure/logger"
 
 	"github.com/nats-io/nats.go"
 )
 
 type NatsPublisher struct {
-	nc *nats.Conn
+	nc     *nats.Conn
+	logger *logger.Logger
 }
 
 type OrderCreatedEvent struct {
@@ -23,7 +24,7 @@ type OrderCreatedEvent struct {
 	CreatedAt   string  `json:"created_at"`
 }
 
-func NewNatsPublisher(url string) (*NatsPublisher, error) {
+func NewNatsPublisher(url string, logger *logger.Logger) (*NatsPublisher, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -36,19 +37,19 @@ func NewNatsPublisher(url string) (*NatsPublisher, error) {
 			nats.MaxReconnects(5),
 			nats.ReconnectWait(2*time.Second),
 			nats.DisconnectErrHandler(func(nc *nats.Conn, err error) {
-				log.Printf("NATS disconnected: %v", err)
+				logger.Warn("NATS disconnected", "error", err)
 			}),
 			nats.ReconnectHandler(func(nc *nats.Conn) {
-				log.Printf("NATS reconnected to %s", nc.ConnectedUrl())
+				logger.Info("NATS reconnected", "url", nc.ConnectedUrl())
 			}),
 		)
 
 		if err == nil {
-			log.Printf("Connected to NATS at %s", url)
-			return &NatsPublisher{nc: nc}, nil
+			logger.Info("Connected to NATS", "url", url)
+			return &NatsPublisher{nc: nc, logger: logger}, nil
 		}
 
-		log.Printf("Attempt %d failed to connect to NATS: %v", i+1, err)
+		logger.Warn("Failed to connect to NATS", "attempt", i+1, "error", err)
 
 		select {
 		case <-ctx.Done():
@@ -74,45 +75,38 @@ func (p *NatsPublisher) PublishOrderCreated(ctx context.Context, order *entities
 		return fmt.Errorf("failed to marshal event: %w", err)
 	}
 
-	go func() {
-		publishCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+	subject := "order.created"
 
-		subject := "order.created"
-
-		for i := 0; i < 3; i++ {
-			select {
-			case <-publishCtx.Done():
-				log.Printf("Context cancelled while publishing to NATS")
-				return
-			default:
-				err := p.nc.Publish(subject, data)
-				if err != nil {
-					log.Printf("Attempt %d failed to publish to NATS: %v", i+1, err)
-
-					time.Sleep(1 * time.Second)
-					continue
-				}
-
-				if err := p.nc.FlushTimeout(2 * time.Second); err != nil {
-					log.Printf("Failed to flush NATS connection: %v", err)
-					continue
-				}
-
-				log.Printf("Successfully published order.created event for order %s", order.OrderID)
-				return
+	for i := 0; i < 3; i++ {
+		select {
+		case <-ctx.Done():
+			p.logger.Warn("Context cancelled while publishing to NATS")
+			return ctx.Err()
+		default:
+			err := p.nc.Publish(subject, data)
+			if err != nil {
+				p.logger.Warn("Failed to publish to NATS", "attempt", i+1, "error", err)
+				time.Sleep(1 * time.Second)
+				continue
 			}
+
+			if err := p.nc.FlushTimeout(2 * time.Second); err != nil {
+				p.logger.Warn("Failed to flush NATS connection", "error", err)
+				continue
+			}
+
+			p.logger.Info("Successfully published order.created event", "order_id", order.OrderID)
+			return nil
 		}
+	}
 
-		log.Printf("Failed to publish event to NATS after retries for order %s", order.OrderID)
-	}()
-
-	return nil
+	p.logger.Error("Failed to publish event to NATS after retries", "order_id", order.OrderID)
+	return fmt.Errorf("failed to publish event after retries")
 }
 
 func (p *NatsPublisher) Close() {
 	if p.nc != nil && p.nc.IsConnected() {
 		p.nc.Close()
-		log.Print("NATS connection closed")
+		p.logger.Info("NATS connection closed")
 	}
 }

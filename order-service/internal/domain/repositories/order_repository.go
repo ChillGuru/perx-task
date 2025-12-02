@@ -1,11 +1,14 @@
 package repositories
 
-import "order-service/internal/domain/entities"
+import (
+	"context"
+	"order-service/internal/domain/entities"
+)
 
 type OrderRepository interface {
-	Create(order *entities.Order) error
-	GetByID(orderID string) (*entities.Order, error)
-	UpdateStatus(orderID, status string) error
+	Create(ctx context.Context, order *entities.Order) error
+	GetByID(ctx context.Context, orderID string) (*entities.Order, error)
+	UpdateStatus(ctx context.Context, orderID, status string) error
 }
 
 var (

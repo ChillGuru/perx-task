@@ -3,8 +3,8 @@ package usecase
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
-	"time"
 
 	"order-service/internal/domain/entities"
 	"order-service/internal/domain/repositories"
@@ -17,21 +17,21 @@ type MockOrderRepository struct {
 	mock.Mock
 }
 
-func (m *MockOrderRepository) Create(order *entities.Order) error {
-	args := m.Called(order)
+func (m *MockOrderRepository) Create(ctx context.Context, order *entities.Order) error {
+	args := m.Called(ctx, order)
 	return args.Error(0)
 }
 
-func (m *MockOrderRepository) GetByID(orderID string) (*entities.Order, error) {
-	args := m.Called(orderID)
+func (m *MockOrderRepository) GetByID(ctx context.Context, orderID string) (*entities.Order, error) {
+	args := m.Called(ctx, orderID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*entities.Order), args.Error(1)
 }
 
-func (m *MockOrderRepository) UpdateStatus(orderID, status string) error {
-	args := m.Called(orderID, status)
+func (m *MockOrderRepository) UpdateStatus(ctx context.Context, orderID, status string) error {
+	args := m.Called(ctx, orderID, status)
 	return args.Error(0)
 }
 
@@ -60,10 +60,13 @@ func TestOrderUseCase_CreateOrder(t *testing.T) {
 		{ProductID: "prod2", Quantity: 1, Price: 5.0},
 	}
 
-	mockRepo.On("Create", mock.AnythingOfType("*entities.Order")).
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	mockRepo.On("Create", mock.Anything, mock.AnythingOfType("*entities.Order")).
 		Return(nil).
 		Run(func(args mock.Arguments) {
-			order := args.Get(0).(*entities.Order)
+			order := args.Get(1).(*entities.Order)
 			assert.Equal(t, "PENDING", order.Status)
 			assert.Equal(t, 25.0, order.TotalAmount)
 			assert.Equal(t, "user123", order.UserID)
@@ -71,7 +74,10 @@ func TestOrderUseCase_CreateOrder(t *testing.T) {
 		})
 
 	mockNats.On("PublishOrderCreated", mock.Anything, mock.AnythingOfType("*entities.Order")).
-		Return(nil)
+		Return(nil).
+		Run(func(args mock.Arguments) {
+			wg.Done()
+		})
 
 	order, err := useCase.CreateOrder(ctx, "user123", items)
 
@@ -82,7 +88,7 @@ func TestOrderUseCase_CreateOrder(t *testing.T) {
 	assert.Equal(t, 25.0, order.TotalAmount)
 	assert.Len(t, order.Items, 2)
 
-	time.Sleep(50 * time.Millisecond)
+	wg.Wait()
 
 	mockRepo.AssertExpectations(t)
 	mockNats.AssertExpectations(t)
@@ -99,11 +105,17 @@ func TestOrderUseCase_CreateOrder_NATSErrorNotFatal(t *testing.T) {
 		{ProductID: "prod1", Quantity: 1, Price: 10.0},
 	}
 
-	mockRepo.On("Create", mock.AnythingOfType("*entities.Order")).
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	mockRepo.On("Create", mock.Anything, mock.AnythingOfType("*entities.Order")).
 		Return(nil)
 
 	mockNats.On("PublishOrderCreated", mock.Anything, mock.AnythingOfType("*entities.Order")).
-		Return(errors.New("nats connection failed"))
+		Return(errors.New("nats connection failed")).
+		Run(func(args mock.Arguments) {
+			wg.Done()
+		})
 
 	order, err := useCase.CreateOrder(ctx, "user123", items)
 
@@ -112,7 +124,7 @@ func TestOrderUseCase_CreateOrder_NATSErrorNotFatal(t *testing.T) {
 	assert.Equal(t, "user123", order.UserID)
 	assert.Equal(t, "PENDING", order.Status)
 
-	time.Sleep(50 * time.Millisecond)
+	wg.Wait()
 
 	mockRepo.AssertExpectations(t)
 	mockNats.AssertExpectations(t)
@@ -128,7 +140,7 @@ func TestOrderUseCase_CreateOrder_WithoutNATSPublisher(t *testing.T) {
 		{ProductID: "prod1", Quantity: 1, Price: 10.0},
 	}
 
-	mockRepo.On("Create", mock.AnythingOfType("*entities.Order")).
+	mockRepo.On("Create", mock.Anything, mock.AnythingOfType("*entities.Order")).
 		Return(nil)
 
 	order, err := useCase.CreateOrder(ctx, "user123", items)
@@ -205,7 +217,7 @@ func TestOrderUseCase_GetOrder(t *testing.T) {
 		Status:  "PENDING",
 	}
 
-	mockRepo.On("GetByID", "test-order").Return(expectedOrder, nil)
+	mockRepo.On("GetByID", mock.Anything, "test-order").Return(expectedOrder, nil)
 
 	order, err := useCase.GetOrder(ctx, "test-order")
 
@@ -223,7 +235,7 @@ func TestOrderUseCase_GetOrder_NotFound(t *testing.T) {
 	useCase := NewOrderUseCase(mockRepo, mockNats)
 	ctx := context.Background()
 
-	mockRepo.On("GetByID", "non-existent").Return((*entities.Order)(nil), repositories.ErrOrderNotFound)
+	mockRepo.On("GetByID", mock.Anything, "non-existent").Return((*entities.Order)(nil), repositories.ErrOrderNotFound)
 
 	order, err := useCase.GetOrder(ctx, "non-existent")
 
@@ -248,8 +260,8 @@ func TestOrderUseCase_UpdateOrderStatus(t *testing.T) {
 		Status:  "PENDING",
 	}
 
-	mockRepo.On("GetByID", "test-order").Return(existingOrder, nil)
-	mockRepo.On("UpdateStatus", "test-order", "PAID").Return(nil)
+	mockRepo.On("GetByID", mock.Anything, "test-order").Return(existingOrder, nil)
+	mockRepo.On("UpdateStatus", mock.Anything, "test-order", "PAID").Return(nil)
 
 	order, err := useCase.UpdateOrderStatus(ctx, "test-order", "PAID")
 
@@ -283,7 +295,7 @@ func TestOrderUseCase_UpdateOrderStatus_NotFound(t *testing.T) {
 	useCase := NewOrderUseCase(mockRepo, mockNats)
 	ctx := context.Background()
 
-	mockRepo.On("GetByID", "non-existent").Return((*entities.Order)(nil), repositories.ErrOrderNotFound)
+	mockRepo.On("GetByID", mock.Anything, "non-existent").Return((*entities.Order)(nil), repositories.ErrOrderNotFound)
 
 	_, err := useCase.UpdateOrderStatus(ctx, "non-existent", "PAID")
 	assert.Error(t, err)
@@ -307,8 +319,8 @@ func TestOrderUseCase_UpdateOrderStatus_AlreadyInStatus(t *testing.T) {
 		Status:  "PAID",
 	}
 
-	mockRepo.On("GetByID", "test-order").Return(existingOrder, nil)
-	mockRepo.On("UpdateStatus", "test-order", "PAID").Return(nil)
+	mockRepo.On("GetByID", mock.Anything, "test-order").Return(existingOrder, nil)
+	mockRepo.On("UpdateStatus", mock.Anything, "test-order", "PAID").Return(nil)
 
 	order, err := useCase.UpdateOrderStatus(ctx, "test-order", "PAID")
 

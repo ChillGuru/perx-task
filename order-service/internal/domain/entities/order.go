@@ -2,6 +2,22 @@ package entities
 
 import "time"
 
+type OrderStatus string
+
+const (
+	OrderStatusPending   OrderStatus = "PENDING"
+	OrderStatusPaid      OrderStatus = "PAID"
+	OrderStatusCancelled OrderStatus = "CANCELLED"
+	OrderStatusFailed    OrderStatus = "FAILED"
+)
+
+var validStatuses = map[OrderStatus]bool{
+	OrderStatusPending:   true,
+	OrderStatusPaid:      true,
+	OrderStatusCancelled: true,
+	OrderStatusFailed:    true,
+}
+
 type Order struct {
 	OrderID     string    `json:"order_id"`
 	UserID      string    `json:"user_id"`
@@ -18,11 +34,5 @@ type Item struct {
 }
 
 func ValidStatus(status string) bool {
-	validStatuses := map[string]bool{
-		"PENDING":   true,
-		"PAID":      true,
-		"CANCELLED": true,
-		"FAILED":    true,
-	}
-	return validStatuses[status]
+	return validStatuses[OrderStatus(status)]
 }
